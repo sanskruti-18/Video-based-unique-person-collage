@@ -2,10 +2,16 @@ package com.example.iykyk.processing
 
 import android.graphics.Bitmap
 import android.graphics.Rect
+import android.util.Log
 import com.example.iykyk.model.DetectedFace
 import kotlin.math.abs
 
 class RepresentativeSelector {
+
+    companion object {
+        private const val MIN_ACCEPTABLE_SHARPNESS = 0.10f
+        private const val MULTI_FACE_PENALTY = 0.10f
+    }
 
     fun selectBestFace(
         faces: List<DetectedFace>,
@@ -16,27 +22,120 @@ class RepresentativeSelector {
             return null
         }
 
-        // Prefer frames where this is the ONLY detected face.
-        val soloFaces = faces.filter { face ->
-            (faceCountAtTimestamp[face.timestampMs] ?: 1) == 1
-        }
+        Log.d(
+            "IYKYK_REP",
+            "Selecting representative from ${faces.size} candidates"
+        )
 
-        // If at least one solo frame exists, completely ignore
-        // frames containing multiple people.
-        val candidates =
-            if (soloFaces.isNotEmpty()) {
-                soloFaces
-            } else {
-                faces
+        val scoredCandidates =
+            faces.map { face ->
+
+                val sharpness =
+                    faceSharpnessScore(face)
+
+                val facesInFrame =
+                    faceCountAtTimestamp[
+                        face.timestampMs
+                    ] ?: 1
+
+                val baseScore =
+                    scoreFace(
+                        face = face,
+                        sharpness = sharpness
+                    )
+
+                /*
+                 * Multiple faces are slightly penalized,
+                 * but NOT rejected.
+                 *
+                 * A sharp multi-face frame is preferable to
+                 * a completely blurred solo frame.
+                 */
+                val contextAdjustment =
+                    if (facesInFrame <= 1) {
+                        0f
+                    } else {
+                        -MULTI_FACE_PENALTY
+                    }
+
+                CandidateScore(
+                    face = face,
+                    sharpness = sharpness,
+                    score =
+                        baseScore +
+                                contextAdjustment,
+                    facesInFrame =
+                        facesInFrame
+                )
             }
 
-        return candidates.maxByOrNull {
-            scoreFace(it)
+        scoredCandidates.forEach { candidate ->
+
+            Log.d(
+                "IYKYK_REP",
+                "timestamp=${candidate.face.timestampMs} " +
+                        "sharpness=${"%.3f".format(candidate.sharpness)} " +
+                        "score=${"%.3f".format(candidate.score)} " +
+                        "facesInFrame=${candidate.facesInFrame}"
+            )
         }
+
+        /*
+         * First use reasonably sharp candidates.
+         */
+        val acceptableCandidates =
+            scoredCandidates.filter {
+                it.sharpness >=
+                        MIN_ACCEPTABLE_SHARPNESS
+            }
+
+        /*
+         * If a good-quality frame exists, choose the highest
+         * quality representative.
+         */
+        val best =
+            if (acceptableCandidates.isNotEmpty()) {
+
+                acceptableCandidates.maxWithOrNull(
+                    compareBy<CandidateScore> {
+                        it.score
+                    }.thenBy {
+                        it.sharpness
+                    }
+                )
+
+            } else {
+
+                /*
+                 * Last resort:
+                 * choose the sharpest frame available.
+                 */
+                scoredCandidates.maxWithOrNull(
+                    compareBy<CandidateScore> {
+                        it.sharpness
+                    }.thenBy {
+                        it.score
+                    }
+                )
+            }
+
+        if (best != null) {
+
+            Log.d(
+                "IYKYK_REP",
+                "SELECTED timestamp=${best.face.timestampMs} " +
+                        "sharpness=${"%.3f".format(best.sharpness)} " +
+                        "score=${"%.3f".format(best.score)} " +
+                        "facesInFrame=${best.facesInFrame}"
+            )
+        }
+
+        return best?.face
     }
 
     private fun scoreFace(
-        face: DetectedFace
+        face: DetectedFace,
+        sharpness: Float
     ): Float {
 
         val pose =
@@ -44,9 +143,6 @@ class RepresentativeSelector {
 
         val eyes =
             eyesScore(face)
-
-        val sharpness =
-            faceSharpnessScore(face)
 
         val size =
             faceSizeScore(
@@ -63,29 +159,14 @@ class RepresentativeSelector {
         val smile =
             face.smilingProbability ?: 0.5f
 
-        var score =
-            pose * 0.30f +
-                    eyes * 0.25f +
-                    sharpness * 0.20f +
-                    size * 0.10f +
-                    completeness * 0.10f +
-                    smile * 0.05f
-
-        /*
-         * Strongly prefer frames where this person
-         * is the only detected person.
-         *
-         * One-person frame:
-         *     no penalty
-         *
-         * Two-person frame:
-         *     significant penalty
-         *
-         * 3+ people:
-         *     even stronger penalty
-         */
-
-        return score
+        return (
+                sharpness * 0.50f +
+                        pose * 0.20f +
+                        eyes * 0.17f +
+                        size * 0.08f +
+                        completeness * 0.03f +
+                        smile * 0.02f
+                )
     }
 
     private fun poseScore(
@@ -133,7 +214,10 @@ class RepresentativeSelector {
         val right =
             face.rightEyeOpenProbability
 
-        if (left == null && right == null) {
+        if (
+            left == null &&
+            right == null
+        ) {
             return 0.5f
         }
 
@@ -146,14 +230,11 @@ class RepresentativeSelector {
         }
 
         return (
-                left + right
+                left +
+                        right
                 ) / 2f
     }
 
-    /**
-     * Calculate sharpness specifically around the
-     * detected person's face.
-     */
     private fun faceSharpnessScore(
         face: DetectedFace
     ): Float {
@@ -164,16 +245,13 @@ class RepresentativeSelector {
         val box =
             face.boundingBox
 
-        /*
-         * Expand slightly around the face so we
-         * evaluate the face + immediate detail,
-         * rather than the entire video frame.
-         */
         val marginX =
-            (box.width() * 0.15f).toInt()
+            (box.width() * 0.15f)
+                .toInt()
 
         val marginY =
-            (box.height() * 0.15f).toInt()
+            (box.height() * 0.15f)
+                .toInt()
 
         val left =
             (box.left - marginX)
@@ -185,17 +263,21 @@ class RepresentativeSelector {
 
         val right =
             (box.right + marginX)
-                .coerceAtMost(bitmap.width)
+                .coerceAtMost(
+                    bitmap.width
+                )
 
         val bottom =
             (box.bottom + marginY)
-                .coerceAtMost(bitmap.height)
+                .coerceAtMost(
+                    bitmap.height
+                )
 
         if (
             right <= left ||
             bottom <= top
         ) {
-            return 0.5f
+            return 0f
         }
 
         val crop =
@@ -255,7 +337,6 @@ class RepresentativeSelector {
             IntArray(width * height)
 
         for (y in 0 until height) {
-
             for (x in 0 until width) {
 
                 val pixel =
@@ -270,9 +351,7 @@ class RepresentativeSelector {
                 val b =
                     pixel and 0xFF
 
-                gray[
-                    y * width + x
-                ] =
+                gray[y * width + x] =
                     (
                             299 * r +
                                     587 * g +
@@ -286,33 +365,22 @@ class RepresentativeSelector {
         var count = 0
 
         for (y in 1 until height - 1) {
-
             for (x in 1 until width - 1) {
 
                 val center =
-                    gray[
-                        y * width + x
-                    ]
+                    gray[y * width + x]
 
                 val top =
-                    gray[
-                        (y - 1) * width + x
-                    ]
+                    gray[(y - 1) * width + x]
 
                 val bottom =
-                    gray[
-                        (y + 1) * width + x
-                    ]
+                    gray[(y + 1) * width + x]
 
                 val left =
-                    gray[
-                        y * width + x - 1
-                    ]
+                    gray[y * width + x - 1]
 
                 val right =
-                    gray[
-                        y * width + x + 1
-                    ]
+                    gray[y * width + x + 1]
 
                 val laplacian =
                     (
@@ -332,7 +400,7 @@ class RepresentativeSelector {
         }
 
         if (count == 0) {
-            return 0.5f
+            return 0f
         }
 
         val mean =
@@ -345,7 +413,10 @@ class RepresentativeSelector {
         return (
                 variance / 250.0
                 )
-            .coerceIn(0.0, 1.0)
+            .coerceIn(
+                0.0,
+                1.0
+            )
             .toFloat()
     }
 
@@ -370,21 +441,11 @@ class RepresentativeSelector {
             faceArea / frameArea
 
         return when {
-
-            ratio < 0.015f ->
-                0.2f
-
-            ratio < 0.04f ->
-                0.6f
-
-            ratio <= 0.20f ->
-                1f
-
-            ratio <= 0.35f ->
-                0.8f
-
-            else ->
-                0.5f
+            ratio < 0.015f -> 0.2f
+            ratio < 0.04f -> 0.6f
+            ratio <= 0.20f -> 1f
+            ratio <= 0.35f -> 0.8f
+            else -> 0.5f
         }
     }
 
@@ -401,13 +462,8 @@ class RepresentativeSelector {
 
         var score = 0f
 
-        if (box.left > marginX) {
-            score += 1f
-        }
-
-        if (box.top > marginY) {
-            score += 1f
-        }
+        if (box.left > marginX) score += 1f
+        if (box.top > marginY) score += 1f
 
         if (
             box.right <
@@ -425,4 +481,11 @@ class RepresentativeSelector {
 
         return score / 4f
     }
+
+    private data class CandidateScore(
+        val face: DetectedFace,
+        val sharpness: Float,
+        val score: Float,
+        val facesInFrame: Int
+    )
 }

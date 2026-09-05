@@ -2,368 +2,1212 @@ package com.example.iykyk.processing
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import com.example.iykyk.model.DetectedFace
 import com.example.iykyk.model.Person
+import kotlin.math.sqrt
 
 class CollageGenerator {
 
     companion object {
+
+        // =========================================================
+        // INSTAGRAM STORY
+        // =========================================================
+
         private const val STORY_WIDTH = 1080
         private const val STORY_HEIGHT = 1920
 
+        // =========================================================
+        // COLLAGE SPACING
+        // =========================================================
+
         private const val OUTER_PADDING = 48f
-        private const val TILE_GAP = 28f
-        private const val HEADER_HEIGHT = 200f
-        private const val FOOTER_HEIGHT = 90f
-        private const val CORNER_RADIUS = 32f
+        private const val TILE_GAP = 18f
+        private const val CORNER_RADIUS = 24f
+
+        /*
+         * Keep the generated collage visually clean.
+         *
+         * The ResultScreen already displays:
+         * PEOPLE
+         * APPEARANCES
+         *
+         * Therefore we intentionally do NOT draw another header
+         * containing the same information inside the collage.
+         */
+
+        private val BACKGROUND =
+            Color.rgb(
+                10,
+                15,
+                28
+            )
     }
 
-    /**
-     * Creates one Instagram Story-style collage containing exactly one
-     * representative frame for every detected person.
-     */
+    // =============================================================
+    // CREATE COLLAGE
+    // =============================================================
+
     fun createCollage(
         people: List<Person>,
         faceCountAtTimestamp: Map<Long, Int> = emptyMap()
     ): Bitmap {
 
         if (people.isEmpty()) {
-            return Bitmap.createBitmap(
-                STORY_WIDTH,
-                STORY_HEIGHT,
-                Bitmap.Config.ARGB_8888
-            ).apply {
-                eraseColor(android.graphics.Color.DKGRAY)
-            }
+            return createEmptyBitmap()
         }
 
-        // Select the best representative face for each person
-        val representatives = people.mapNotNull { person ->
-            val representative = selectPersonRepresentative(person, faceCountAtTimestamp)
-            if (representative != null) {
-                Triple(person.id, person.appearanceCount, representative)
-            } else {
-                null
+        /*
+         * ---------------------------------------------------------
+         * Select exactly ONE representative image per person.
+         * ---------------------------------------------------------
+         *
+         * Identity/tracking/clustering is NOT modified here.
+         */
+        val representatives =
+            people.mapNotNull { person ->
+
+                val representative =
+                    selectPersonRepresentative(
+                        person = person,
+                        faceCountAtTimestamp =
+                            faceCountAtTimestamp
+                    )
+
+                if (representative != null) {
+
+                    representative
+
+                } else {
+
+                    null
+                }
             }
-        }
 
         if (representatives.isEmpty()) {
-            return Bitmap.createBitmap(
+            return createEmptyBitmap()
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * Create Instagram Story canvas.
+         * ---------------------------------------------------------
+         */
+
+        val collage =
+            Bitmap.createBitmap(
                 STORY_WIDTH,
                 STORY_HEIGHT,
                 Bitmap.Config.ARGB_8888
-            ).apply {
-                eraseColor(android.graphics.Color.DKGRAY)
-            }
-        }
-
-        val collage = Bitmap.createBitmap(
-            STORY_WIDTH,
-            STORY_HEIGHT,
-            Bitmap.Config.ARGB_8888
-        )
-        val canvas = Canvas(collage)
-
-        // Background: Modern sleek dark charcoal/slate (#0F172A)
-        canvas.drawColor(android.graphics.Color.rgb(15, 23, 42))
-
-        // Total appearances across all detected persons
-        val totalAppearances = people.sumOf { it.appearanceCount }
-
-        // Draw Header
-        drawHeader(canvas, people.size, totalAppearances)
-
-        // Grid dimensions
-        val columns = if (representatives.size <= 2) 1 else 2
-        val rows = (representatives.size + columns - 1) / columns
-
-        val availableWidth = STORY_WIDTH - (OUTER_PADDING * 2) - ((columns - 1) * TILE_GAP)
-        val tileWidth = availableWidth / columns
-
-        val availableHeight = STORY_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT - (OUTER_PADDING * 2) - ((rows - 1) * TILE_GAP)
-        val tileHeight = (availableHeight / rows).coerceAtLeast(150f)
-
-        // Draw each person's tile
-        representatives.forEachIndexed { index, triple ->
-            val personId = triple.first
-            val appearanceCount = triple.second
-            val face = triple.third
-
-            val row = index / columns
-            val isLastOddItem = (index == representatives.size - 1) && (representatives.size % 2 != 0) && (columns == 2)
-
-            val left = if (isLastOddItem) {
-                // Center the last odd person
-                (STORY_WIDTH - tileWidth) / 2f
-            } else {
-                val column = index % columns
-                OUTER_PADDING + column * (tileWidth + TILE_GAP)
-            }
-
-            val top = HEADER_HEIGHT + OUTER_PADDING + row * (tileHeight + TILE_GAP)
-
-            val tileRect = RectF(
-                left,
-                top,
-                left + tileWidth,
-                top + tileHeight
             )
+
+        val canvas =
+            Canvas(collage)
+
+        canvas.drawColor(
+            BACKGROUND
+        )
+
+        /*
+         * ---------------------------------------------------------
+         * Adaptive tile layout.
+         * ---------------------------------------------------------
+         */
+
+        val tileRects =
+            createAdaptiveLayout(
+                count = representatives.size
+            )
+
+        representatives.forEachIndexed { index, face ->
+
+            if (index >= tileRects.size) {
+                return@forEachIndexed
+            }
+
+            val tileRect =
+                tileRects[index]
+
+            val facesInFrame =
+                faceCountAtTimestamp[
+                    face.timestampMs
+                ] ?: 1
 
             drawPersonTile(
                 canvas = canvas,
                 tileRect = tileRect,
                 face = face,
-                personId = personId,
-                appearanceCount = appearanceCount
+                facesInFrame = facesInFrame
             )
         }
-
-        // Draw Footer
-        drawFooter(canvas)
 
         return collage
     }
 
-    private fun drawHeader(canvas: Canvas, peopleCount: Int, totalAppearances: Int) {
-        val topPillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.rgb(30, 41, 59)
-            style = Paint.Style.FILL
-        }
-        val pillRect = RectF(OUTER_PADDING, 48f, OUTER_PADDING + 220f, 92f)
-        canvas.drawRoundRect(pillRect, 22f, 22f, topPillPaint)
+    // =============================================================
+    // EMPTY
+    // =============================================================
 
-        val pillTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.rgb(56, 189, 248) // Sky blue
-            textSize = 22f
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-        }
-        canvas.drawText("IYKYK COLLAGE", OUTER_PADDING + 24f, 78f, pillTextPaint)
+    private fun createEmptyBitmap(): Bitmap {
 
-        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.WHITE
-            textSize = 52f
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-        }
-        canvas.drawText("Unique Faces", OUTER_PADDING, 150f, titlePaint)
+        return Bitmap.createBitmap(
+            STORY_WIDTH,
+            STORY_HEIGHT,
+            Bitmap.Config.ARGB_8888
+        ).apply {
 
-        val subtitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.rgb(148, 163, 184) // Slate 400
-            textSize = 26f
-        }
-        canvas.drawText(
-            "$peopleCount unique people  •  $totalAppearances appearances",
-            OUTER_PADDING,
-            188f,
-            subtitlePaint
-        )
-    }
-
-    private fun drawFooter(canvas: Canvas) {
-        val footerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.rgb(100, 116, 139)
-            textSize = 22f
-            textAlign = Paint.Align.CENTER
-        }
-        canvas.drawText(
-            "Processed on-device with ML Kit & MobileFaceNet",
-            STORY_WIDTH / 2f,
-            STORY_HEIGHT - 38f,
-            footerPaint
-        )
-    }
-
-    private fun drawPersonTile(
-        canvas: Canvas,
-        tileRect: RectF,
-        face: DetectedFace,
-        personId: Int,
-        appearanceCount: Int
-    ) {
-        val generousCrop = createGenerousPortraitCrop(face)
-
-        val destination = calculateCenterCropRect(
-            sourceWidth = generousCrop.width,
-            sourceHeight = generousCrop.height,
-            destination = tileRect
-        )
-
-        // Clip tile with rounded corners
-        canvas.save()
-        val clipPath = Path().apply {
-            addRoundRect(tileRect, CORNER_RADIUS, CORNER_RADIUS, Path.Direction.CW)
-        }
-        canvas.clipPath(clipPath)
-
-        val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        canvas.drawBitmap(generousCrop, null, destination, bitmapPaint)
-
-        // Subtle gradient overlay at bottom for badge readability
-        val gradientPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            shader = android.graphics.LinearGradient(
-                tileRect.left,
-                tileRect.bottom - 160f,
-                tileRect.left,
-                tileRect.bottom,
-                android.graphics.Color.TRANSPARENT,
-                android.graphics.Color.argb(200, 0, 0, 0),
-                android.graphics.Shader.TileMode.CLAMP
+            eraseColor(
+                BACKGROUND
             )
         }
-        canvas.drawRect(
-            tileRect.left,
-            tileRect.bottom - 160f,
-            tileRect.right,
-            tileRect.bottom,
-            gradientPaint
-        )
-
-        // Floating pill badge
-        val badgeHeight = 64f
-        val badgeMargin = 16f
-        val badgeRect = RectF(
-            tileRect.left + badgeMargin,
-            tileRect.bottom - badgeHeight - badgeMargin,
-            tileRect.right - badgeMargin,
-            tileRect.bottom - badgeMargin
-        )
-
-        val badgeBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.argb(220, 15, 23, 42)
-            style = Paint.Style.FILL
-        }
-        canvas.drawRoundRect(badgeRect, 18f, 18f, badgeBgPaint)
-
-        // Person ID label
-        val namePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.WHITE
-            textSize = 26f
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-        }
-        canvas.drawText(
-            "Person $personId",
-            badgeRect.left + 20f,
-            badgeRect.centerY() + 9f,
-            namePaint
-        )
-
-        // Appearance count label
-        val countText = if (appearanceCount == 1) "1 appearance" else "$appearanceCount appearances"
-        val countPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.rgb(56, 189, 248) // Vibrant sky blue
-            textSize = 22f
-            textAlign = Paint.Align.RIGHT
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-        }
-        canvas.drawText(
-            countText,
-            badgeRect.right - 20f,
-            badgeRect.centerY() + 8f,
-            countPaint
-        )
-
-        canvas.restore()
-
-        // Subtle sleek outer border around tile
-        val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.argb(50, 255, 255, 255)
-            style = Paint.Style.STROKE
-            strokeWidth = 3f
-        }
-        canvas.drawRoundRect(tileRect, CORNER_RADIUS, CORNER_RADIUS, borderPaint)
     }
 
-    /**
-     * Select the best representative frame for this person from all their appearances.
-     */
-    private fun selectPersonRepresentative(
-        person: Person,
-        faceCountAtTimestamp: Map<Long, Int>
-    ): DetectedFace? {
-        val candidates = person.appearances.mapNotNull { it.representativeFace }
-        if (candidates.isEmpty()) {
-            return person.faces.firstOrNull()
-        }
+    // =============================================================
+    // ADAPTIVE LAYOUT
+    // =============================================================
 
-        val selector = RepresentativeSelector()
-        return selector.selectBestFace(candidates, faceCountAtTimestamp)
-            ?: candidates.firstOrNull()
-    }
+    private fun createAdaptiveLayout(
+        count: Int
+    ): List<RectF> {
 
-    /**
-     * Creates a generous portrait crop around the detected face.
-     * Includes head, hair, shoulders, and contextual background.
-     */
-    private fun createGenerousPortraitCrop(face: DetectedFace): Bitmap {
-        val bitmap = face.frame
-        val box = face.boundingBox
+        val left = OUTER_PADDING
+        val right = STORY_WIDTH - OUTER_PADDING
 
-        val faceW = box.width()
-        val faceH = box.height()
-
-        // Generous portrait framing:
-        // Horizontal: ~70% face width on both sides
-        // Top (headroom): ~65% face height above forehead
-        // Bottom (torso/shoulders): ~110% face height below chin
-        val marginX = (faceW * 0.70f).toInt()
-        val marginTop = (faceH * 0.65f).toInt()
-        val marginBottom = (faceH * 1.10f).toInt()
-
-        val left = (box.left - marginX).coerceAtLeast(0)
-        val top = (box.top - marginTop).coerceAtLeast(0)
-        val right = (box.right + marginX).coerceAtMost(bitmap.width)
-        val bottom = (box.bottom + marginBottom).coerceAtMost(bitmap.height)
+        val top = 220f
+        val bottom = STORY_HEIGHT - 120f
 
         val width = right - left
-        val height = bottom - top
+        val availableHeight = bottom - top
 
-        if (width <= 0 || height <= 0) {
+        val gap = 24f
+
+        return when {
+
+            // =====================================================
+            // 1 PERSON
+            // =====================================================
+
+            count == 1 -> {
+
+                val size = minOf(
+                    width * 0.78f,
+                    availableHeight * 0.45f
+                )
+
+                val x =
+                    (STORY_WIDTH - size) / 2f
+
+                val y =
+                    top + 120f
+
+                listOf(
+                    RectF(
+                        x,
+                        y,
+                        x + size,
+                        y + size
+                    )
+                )
+            }
+
+
+            // =====================================================
+            // 2 PEOPLE
+            // =====================================================
+
+            count == 2 -> {
+
+                val size =
+                    minOf(
+                        (width - gap) / 2f,
+                        500f
+                    )
+
+                val totalWidth =
+                    size * 2f + gap
+
+                val startX =
+                    (STORY_WIDTH - totalWidth) / 2f
+
+                val y =
+                    top + 180f
+
+                listOf(
+
+                    RectF(
+                        startX,
+                        y,
+                        startX + size,
+                        y + size
+                    ),
+
+                    RectF(
+                        startX + size + gap,
+                        y,
+                        startX + size * 2f + gap,
+                        y + size
+                    )
+                )
+            }
+
+
+            // =====================================================
+            // 3 PEOPLE
+            // =====================================================
+
+            count == 3 -> {
+
+                val size =
+                    minOf(
+                        (width - gap * 2f) / 3f,
+                        330f
+                    )
+
+                val totalWidth =
+                    size * 3f + gap * 2f
+
+                val startX =
+                    (STORY_WIDTH - totalWidth) / 2f
+
+                val y =
+                    top + 200f
+
+                listOf(
+
+                    RectF(
+                        startX,
+                        y,
+                        startX + size,
+                        y + size
+                    ),
+
+                    RectF(
+                        startX + size + gap,
+                        y,
+                        startX + size * 2f + gap,
+                        y + size
+                    ),
+
+                    RectF(
+                        startX + size * 2f + gap * 2f,
+                        y,
+                        startX + size * 3f + gap * 2f,
+                        y + size
+                    )
+                )
+            }
+
+
+            // =====================================================
+            // 4 PEOPLE
+            // =====================================================
+
+            count == 4 -> {
+
+                createCenteredGrid(
+                    count = 4,
+                    columns = 2,
+                    top = top + 150f,
+                    width = width,
+                    gap = gap,
+                    maxTileSize = 420f
+                )
+            }
+
+
+            // =====================================================
+            // 5 PEOPLE
+            // =====================================================
+
+            count == 5 -> {
+
+                val tileSize =
+                    minOf(
+                        (width - gap * 2f) / 3f,
+                        320f
+                    )
+
+                val totalTopWidth =
+                    tileSize * 3f +
+                            gap * 2f
+
+                val startX =
+                    (STORY_WIDTH -
+                            totalTopWidth) / 2f
+
+                val topY =
+                    top + 140f
+
+                val bottomY =
+                    topY +
+                            tileSize +
+                            gap
+
+
+                listOf(
+
+                    // -------------------------
+                    // TOP 1
+                    // -------------------------
+
+                    RectF(
+                        startX,
+                        topY,
+                        startX + tileSize,
+                        topY + tileSize
+                    ),
+
+                    // -------------------------
+                    // TOP 2
+                    // -------------------------
+
+                    RectF(
+                        startX + tileSize + gap,
+                        topY,
+                        startX + tileSize * 2f + gap,
+                        topY + tileSize
+                    ),
+
+                    // -------------------------
+                    // TOP 3
+                    // -------------------------
+
+                    RectF(
+                        startX + tileSize * 2f + gap * 2f,
+                        topY,
+                        startX + tileSize * 3f + gap * 2f,
+                        topY + tileSize
+                    ),
+
+                    // -------------------------
+                    // BOTTOM 4
+                    // -------------------------
+
+                    RectF(
+                        (STORY_WIDTH -
+                                tileSize * 2f -
+                                gap) / 2f,
+                        bottomY,
+                        (STORY_WIDTH -
+                                tileSize * 2f -
+                                gap) / 2f +
+                                tileSize,
+                        bottomY + tileSize
+                    ),
+
+                    // -------------------------
+                    // BOTTOM 5
+                    // -------------------------
+
+                    RectF(
+                        (STORY_WIDTH -
+                                tileSize * 2f -
+                                gap) / 2f +
+                                tileSize +
+                                gap,
+                        bottomY,
+                        (STORY_WIDTH -
+                                tileSize * 2f -
+                                gap) / 2f +
+                                tileSize * 2f +
+                                gap,
+                        bottomY + tileSize
+                    )
+                )
+            }
+
+
+            // =====================================================
+            // 6 PEOPLE
+            // =====================================================
+
+            count == 6 -> {
+
+                createCenteredGrid(
+                    count = 6,
+                    columns = 3,
+                    top = top + 120f,
+                    width = width,
+                    gap = gap,
+                    maxTileSize = 320f
+                )
+            }
+
+
+            // =====================================================
+            // 7+ PEOPLE
+            // =====================================================
+
+            else -> {
+
+                val columns =
+                    if (count <= 9) 3 else 4
+
+                createCenteredGrid(
+                    count = count,
+                    columns = columns,
+                    top = top + 80f,
+                    width = width,
+                    gap = gap,
+                    maxTileSize =
+                        if (columns == 3)
+                            300f
+                        else
+                            235f
+                )
+            }
+        }
+    }
+    private fun createCenteredGrid(
+        count: Int,
+        columns: Int,
+        top: Float,
+        width: Float,
+        gap: Float,
+        maxTileSize: Float
+    ): List<RectF> {
+
+        val tileSize =
+            minOf(
+                (
+                        width -
+                                gap * (columns - 1)
+                        ) / columns,
+
+                maxTileSize
+            )
+
+        val rows =
+            (count + columns - 1) /
+                    columns
+
+        val result =
+            mutableListOf<RectF>()
+
+        var index = 0
+
+        for (row in 0 until rows) {
+
+            val itemsInRow =
+                minOf(
+                    columns,
+                    count - index
+                )
+
+            val rowWidth =
+                itemsInRow * tileSize +
+                        (itemsInRow - 1) * gap
+
+            val startX =
+                (STORY_WIDTH - rowWidth) / 2f
+
+            val y =
+                top +
+                        row *
+                        (tileSize + gap)
+
+            for (column in 0 until itemsInRow) {
+
+                val x =
+                    startX +
+                            column *
+                            (tileSize + gap)
+
+                result.add(
+                    RectF(
+                        x,
+                        y,
+                        x + tileSize,
+                        y + tileSize
+                    )
+                )
+
+                index++
+            }
+        }
+
+        return result
+    }
+    private fun createGenerousPortraitCrop(
+        face: DetectedFace,
+        facesInFrame: Int
+    ): Bitmap {
+
+        val bitmap =
+            face.frame
+
+        val box =
+            face.boundingBox
+
+        val faceWidth =
+            box.width().toFloat()
+
+        val faceHeight =
+            box.height().toFloat()
+
+        if (
+            faceWidth <= 0f ||
+            faceHeight <= 0f
+        ) {
             return bitmap
         }
+
+
+        // =========================================================
+        // CENTER
+        // =========================================================
+
+        val centerX =
+            box.exactCenterX()
+
+        val centerY =
+            box.exactCenterY()
+
+
+        // =========================================================
+        // SQUARE-ISH CROP
+        //
+        // Keep enough context around the face without letting the
+        // crop become the entire frame.
+        // =========================================================
+
+        val cropSize =
+            if (facesInFrame <= 1) {
+
+                // Single-person frame:
+                // generous but still controlled.
+                faceWidth * 2.15f
+
+            } else {
+
+                // Shared frame:
+                // tighter horizontally to avoid neighboring people.
+                faceWidth * 1.45f
+            }
+
+
+        val maxCropWidth =
+            if (facesInFrame <= 1) {
+
+                bitmap.width * 0.82f
+
+            } else {
+
+                bitmap.width * 0.52f
+            }
+
+
+        val finalCropSize =
+            minOf(
+                cropSize,
+                maxCropWidth,
+                bitmap.height.toFloat()
+            )
+
+
+        // =========================================================
+        // CENTER AROUND FACE
+        // =========================================================
+
+        var left =
+            (
+                    centerX -
+                            finalCropSize / 2f
+                    ).toInt()
+
+        var right =
+            (
+                    centerX +
+                            finalCropSize / 2f
+                    ).toInt()
+
+        var top =
+            (
+                    centerY -
+                            finalCropSize * 0.43f
+                    ).toInt()
+
+        var bottom =
+            (
+                    top +
+                            finalCropSize
+                    ).toInt()
+
+
+        // =========================================================
+        // KEEP CROP INSIDE FRAME
+        // =========================================================
+
+        if (left < 0) {
+
+            right -= left
+            left = 0
+        }
+
+        if (right > bitmap.width) {
+
+            left -=
+                right - bitmap.width
+
+            right =
+                bitmap.width
+        }
+
+
+        if (top < 0) {
+
+            bottom -= top
+            top = 0
+        }
+
+        if (bottom > bitmap.height) {
+
+            top -=
+                bottom - bitmap.height
+
+            bottom =
+                bitmap.height
+        }
+
+
+        // =========================================================
+        // FINAL SAFETY
+        // =========================================================
+
+        left =
+            left.coerceIn(
+                0,
+                bitmap.width - 1
+            )
+
+        top =
+            top.coerceIn(
+                0,
+                bitmap.height - 1
+            )
+
+        right =
+            right.coerceIn(
+                left + 1,
+                bitmap.width
+            )
+
+        bottom =
+            bottom.coerceIn(
+                top + 1,
+                bitmap.height
+            )
+
 
         return Bitmap.createBitmap(
             bitmap,
             left,
             top,
-            width,
-            height
+            right - left,
+            bottom - top
         )
     }
 
-    /**
-     * Calculates a center-crop destination rectangle so the source fills the tile without distortion.
-     */
+    // =============================================================
+    // ROW LAYOUT
+    // =============================================================
+
+    private fun createRowsLayout(
+        rowPattern: List<Int>,
+        left: Float,
+        top: Float,
+        width: Float,
+        height: Float
+    ): List<RectF> {
+
+        if (rowPattern.isEmpty()) {
+            return emptyList()
+        }
+
+        val rows =
+            rowPattern.size
+
+        val verticalGap =
+            TILE_GAP *
+                    (rows - 1)
+
+        val rowHeight =
+            (
+                    height -
+                            verticalGap
+                    ) / rows
+
+        val result =
+            mutableListOf<RectF>()
+
+        var currentTop =
+            top
+
+        rowPattern.forEach { columns ->
+
+            if (columns <= 0) {
+                return@forEach
+            }
+
+            val horizontalGap =
+                TILE_GAP *
+                        (columns - 1)
+
+            val tileWidth =
+                (
+                        width -
+                                horizontalGap
+                        ) / columns
+
+            for (column in 0 until columns) {
+
+                val tileLeft =
+                    left +
+                            column *
+                            (
+                                    tileWidth +
+                                            TILE_GAP
+                                    )
+
+                result.add(
+                    RectF(
+                        tileLeft,
+                        currentTop,
+                        tileLeft + tileWidth,
+                        currentTop + rowHeight
+                    )
+                )
+            }
+
+            currentTop +=
+                rowHeight +
+                        TILE_GAP
+        }
+
+        return result
+    }
+
+    // =============================================================
+    // DRAW PERSON TILE
+    // =============================================================
+
+    private fun drawPersonTile(
+        canvas: Canvas,
+        tileRect: RectF,
+        face: DetectedFace,
+        facesInFrame: Int
+    ) {
+
+        val crop =
+            createFaceCenteredCrop(
+                face = face,
+                facesInFrame = facesInFrame
+            )
+
+        val destination =
+            calculateCenterCropRect(
+                sourceWidth = crop.width,
+                sourceHeight = crop.height,
+                destination = tileRect
+            )
+
+        canvas.save()
+
+        val path =
+            Path().apply {
+
+                addRoundRect(
+                    tileRect,
+                    CORNER_RADIUS,
+                    CORNER_RADIUS,
+                    Path.Direction.CW
+                )
+            }
+
+        canvas.clipPath(path)
+
+        val paint =
+            Paint(
+                Paint.ANTI_ALIAS_FLAG or
+                        Paint.FILTER_BITMAP_FLAG
+            )
+
+        canvas.drawBitmap(
+            crop,
+            null,
+            destination,
+            paint
+        )
+
+        canvas.restore()
+    }
+
+    // =============================================================
+    // SELECT FINAL REPRESENTATIVE
+    // =============================================================
+
+    private fun selectPersonRepresentative(
+        person: Person,
+        faceCountAtTimestamp:
+        Map<Long, Int>
+    ): DetectedFace? {
+
+        val candidates =
+            person.appearances
+                .mapNotNull {
+                    it.representativeFace
+                }
+
+        if (candidates.isEmpty()) {
+
+            return person.faces
+                .firstOrNull()
+        }
+
+        return RepresentativeSelector()
+            .selectBestFace(
+                faces = candidates,
+                faceCountAtTimestamp =
+                    faceCountAtTimestamp
+            )
+    }
+
+    // =============================================================
+    // FACE-CENTRED PORTRAIT CROP
+    // =============================================================
+
+    private fun createFaceCenteredCrop(
+        face: DetectedFace,
+        facesInFrame: Int
+    ): Bitmap {
+
+        val bitmap =
+            face.frame
+
+        val box =
+            face.boundingBox
+
+        /*
+         * ---------------------------------------------------------
+         * Find the actual centre of the face.
+         * ---------------------------------------------------------
+         */
+
+        val leftEye =
+            face.leftEyePosition
+
+        val rightEye =
+            face.rightEyePosition
+
+        val faceCenterX: Float
+        val faceCenterY: Float
+
+        if (
+            leftEye != null &&
+            rightEye != null
+        ) {
+
+            faceCenterX =
+                (
+                        leftEye.x +
+                                rightEye.x
+                        ) / 2f
+
+            /*
+             * Eyes are above the centre of the head.
+             * Move the crop centre slightly downward so
+             * the mouth and chin remain visible.
+             */
+            faceCenterY =
+                (
+                        leftEye.y +
+                                rightEye.y
+                        ) / 2f +
+                        box.height() * 0.20f
+
+        } else {
+
+            faceCenterX =
+                box.exactCenterX()
+
+            faceCenterY =
+                box.exactCenterY()
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * Estimate real face width using eye distance.
+         * ---------------------------------------------------------
+         */
+
+        val eyeDistance: Float =
+            if (
+                leftEye != null &&
+                rightEye != null
+            ) {
+
+                val dx =
+                    rightEye.x -
+                            leftEye.x
+
+                val dy =
+                    rightEye.y -
+                            leftEye.y
+
+                sqrt(
+                    dx * dx +
+                            dy * dy
+                )
+
+            } else {
+
+                box.width().toFloat()
+            }
+
+        /*
+         * Estimate the full head width.
+         */
+        val estimatedFaceWidth =
+            if (eyeDistance > 5f) {
+
+                eyeDistance * 2.45f
+
+            } else {
+
+                box.width().toFloat()
+            }
+
+        /*
+         * ---------------------------------------------------------
+         * SQUARE CROP
+         *
+         * We want:
+         *
+         *       hair
+         *    ┌───────────┐
+         *    │           │
+         *    │   FACE    │
+         *    │           │
+         *    │ shoulders │
+         *    └───────────┘
+         *
+         * NOT:
+         *
+         *       👁️👁️
+         *       👃
+         *       👄
+         * ---------------------------------------------------------
+         */
+
+        val cropSize =
+            (
+                    estimatedFaceWidth * 2.0f
+                    )
+                .coerceAtLeast(220f)
+                .coerceAtMost(
+                    bitmap.width * 0.60f
+                )
+                .coerceAtMost(
+                    bitmap.height * 0.60f
+                )
+
+        /*
+         * Shared frames get a slightly smaller crop
+         * to avoid accidentally including another person.
+         */
+        val finalCropSize =
+            if (facesInFrame > 1) {
+
+                (
+                        estimatedFaceWidth * 1.75f
+                        )
+                    .coerceAtLeast(220f)
+                    .coerceAtMost(
+                        bitmap.width * 0.48f
+                    )
+                    .coerceAtMost(
+                        bitmap.height * 0.48f
+                    )
+
+            } else {
+
+                cropSize
+            }
+
+        /*
+         * ---------------------------------------------------------
+         * Create square bounds.
+         * ---------------------------------------------------------
+         */
+
+        var left =
+            (
+                    faceCenterX -
+                            finalCropSize / 2f
+                    ).toInt()
+
+        var top =
+            (
+                    faceCenterY -
+                            finalCropSize / 2f
+                    ).toInt()
+
+        var right =
+            left +
+                    finalCropSize.toInt()
+
+        var bottom =
+            top +
+                    finalCropSize.toInt()
+
+        /*
+         * ---------------------------------------------------------
+         * Keep crop inside bitmap.
+         * ---------------------------------------------------------
+         */
+
+        if (left < 0) {
+
+            right -= left
+            left = 0
+        }
+
+        if (top < 0) {
+
+            bottom -= top
+            top = 0
+        }
+
+        if (right > bitmap.width) {
+
+            val shift =
+                right -
+                        bitmap.width
+
+            left -= shift
+            right =
+                bitmap.width
+        }
+
+        if (bottom > bitmap.height) {
+
+            val shift =
+                bottom -
+                        bitmap.height
+
+            top -= shift
+            bottom =
+                bitmap.height
+        }
+
+        /*
+         * Final safety.
+         */
+
+        left =
+            left.coerceIn(
+                0,
+                bitmap.width - 2
+            )
+
+        top =
+            top.coerceIn(
+                0,
+                bitmap.height - 2
+            )
+
+        right =
+            right.coerceIn(
+                left + 2,
+                bitmap.width
+            )
+
+        bottom =
+            bottom.coerceIn(
+                top + 2,
+                bitmap.height
+            )
+
+        return Bitmap.createBitmap(
+            bitmap,
+            left,
+            top,
+            right - left,
+            bottom - top
+        )
+    }
+
+    // =============================================================
+    // CENTER CROP
+    // =============================================================
+
     private fun calculateCenterCropRect(
         sourceWidth: Int,
         sourceHeight: Int,
         destination: RectF
     ): RectF {
-        if (sourceWidth <= 0 || sourceHeight <= 0) {
+
+        if (
+            sourceWidth <= 0 ||
+            sourceHeight <= 0
+        ) {
             return destination
         }
 
-        val sourceRatio = sourceWidth.toFloat() / sourceHeight.toFloat()
-        val destinationRatio = destination.width() / destination.height()
+        val sourceRatio =
+            sourceWidth.toFloat() /
+                    sourceHeight.toFloat()
 
-        return if (sourceRatio > destinationRatio) {
-            val scaledHeight = destination.height()
-            val scaledWidth = scaledHeight * sourceRatio
+        val destinationRatio =
+            destination.width() /
+                    destination.height()
+
+        return if (
+            sourceRatio > destinationRatio
+        ) {
+
+            val scaledHeight =
+                destination.height()
+
+            val scaledWidth =
+                scaledHeight *
+                        sourceRatio
+
             RectF(
-                destination.centerX() - scaledWidth / 2f,
+                destination.centerX() -
+                        scaledWidth / 2f,
+
                 destination.top,
-                destination.centerX() + scaledWidth / 2f,
+
+                destination.centerX() +
+                        scaledWidth / 2f,
+
                 destination.bottom
             )
+
         } else {
-            val scaledWidth = destination.width()
-            val scaledHeight = scaledWidth / sourceRatio
+
+            val scaledWidth =
+                destination.width()
+
+            val scaledHeight =
+                scaledWidth /
+                        sourceRatio
+
             RectF(
                 destination.left,
-                destination.centerY() - scaledHeight / 2f,
+
+                destination.centerY() -
+                        scaledHeight / 2f,
+
                 destination.right,
-                destination.centerY() + scaledHeight / 2f
+
+                destination.centerY() +
+                        scaledHeight / 2f
             )
         }
     }

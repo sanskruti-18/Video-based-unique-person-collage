@@ -10,13 +10,19 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
 import android.widget.Toast
+
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
+
 import com.example.iykyk.data.VideoFrameExtractor
 import com.example.iykyk.model.Appearance
 import com.example.iykyk.model.DetectedFace
@@ -32,11 +38,13 @@ import com.example.iykyk.ui.screens.HomeScreen
 import com.example.iykyk.ui.screens.ProcessingScreen
 import com.example.iykyk.ui.screens.ResultScreen
 import com.example.iykyk.ui.theme.IykykTheme
+
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
 import java.io.File
-import java.io.FileOutputStream
+
 
 class MainActivity : ComponentActivity() {
 
@@ -46,26 +54,42 @@ class MainActivity : ComponentActivity() {
     private lateinit var representativeSelector: RepresentativeSelector
     private lateinit var collageGenerator: CollageGenerator
 
+
     override fun onCreate(savedInstanceState: Bundle?) {
+
         super.onCreate(savedInstanceState)
 
-        // -----------------------------------------
+        // =========================================================
         // INITIALIZE PROCESSING COMPONENTS
-        // -----------------------------------------
+        // =========================================================
 
-        frameExtractor = VideoFrameExtractor(this)
-        faceDetector = FaceDetector()
-        faceEmbedder = FaceEmbedder(this)
-        representativeSelector = RepresentativeSelector()
-        collageGenerator = CollageGenerator()
+        frameExtractor =
+            VideoFrameExtractor(this)
+
+        faceDetector =
+            FaceDetector()
+
+        faceEmbedder =
+            FaceEmbedder(this)
+
+        representativeSelector =
+            RepresentativeSelector()
+
+        collageGenerator =
+            CollageGenerator()
+
+
+        // =========================================================
+        // COMPOSE UI
+        // =========================================================
 
         setContent {
 
             IykykTheme {
 
-                // -----------------------------------------
+                // -------------------------------------------------
                 // UI STATE
-                // -----------------------------------------
+                // -------------------------------------------------
 
                 var isProcessing by remember {
                     mutableStateOf(false)
@@ -80,153 +104,258 @@ class MainActivity : ComponentActivity() {
                 }
 
                 var resultPeople by remember {
-                    mutableStateOf<List<Person>>(emptyList())
+                    mutableStateOf<List<Person>>(
+                        emptyList()
+                    )
                 }
 
                 var resultCollage by remember {
-                    mutableStateOf<android.graphics.Bitmap?>(null)
+                    mutableStateOf<Bitmap?>(null)
                 }
 
-                // -----------------------------------------
+
+                // =================================================
                 // VIDEO PICKER
-                // -----------------------------------------
+                // =================================================
 
                 val videoPicker =
                     rememberLauncherForActivityResult(
-                        contract = ActivityResultContracts.GetContent()
+                        contract =
+                            ActivityResultContracts.GetContent()
                     ) { uri ->
 
-                        if (uri != null) {
+                        if (uri == null) {
+                            return@rememberLauncherForActivityResult
+                        }
 
-                            // Reset UI
-                            isProcessing = true
-                            progress = 0f
-                            status = "Starting..."
-                            resultPeople = emptyList()
+                        // Reset previous result
+                        resultPeople =
+                            emptyList()
 
-                            // -----------------------------------------
-                            // START PROCESSING
-                            // -----------------------------------------
+                        resultCollage =
+                            null
 
-                            lifecycleScope.launch {
+                        progress =
+                            0f
 
-                                try {
+                        status =
+                            "Starting..."
 
-                                    /*
-                                     * Video processing is CPU/ML intensive,
-                                     * so run it away from the main UI thread.
-                                     */
-                                    val (people, faceCounts) =
-                                        withContext(Dispatchers.Default) {
+                        isProcessing =
+                            true
 
-                                            processVideo(
-                                                uri = uri,
-                                                onProgress = { value, message ->
 
-                                                    /*
-                                                     * processVideo runs on a
-                                                     * background thread, so UI
-                                                     * state is updated on Main.
-                                                     */
-                                                    withContext(
-                                                        Dispatchers.Main
-                                                    ) {
+                        // =================================================
+                        // PROCESS VIDEO IN BACKGROUND
+                        // =================================================
 
-                                                        progress = value
-                                                        status = message
-                                                    }
+                        lifecycleScope.launch {
+
+                            try {
+
+                                val result =
+                                    withContext(
+                                        Dispatchers.Default
+                                    ) {
+
+                                        processVideo(
+                                            uri = uri,
+                                            onProgress = {
+                                                    value,
+                                                    message ->
+
+                                                withContext(
+                                                    Dispatchers.Main
+                                                ) {
+
+                                                    progress =
+                                                        value
+
+                                                    status =
+                                                        message
                                                 }
-                                            )
-                                        }
+                                            }
+                                        )
+                                    }
 
-                                    // -----------------------------------------
-                                    // PROCESSING FINISHED
-                                    // -----------------------------------------
 
-                                    val collage =
+                                val people =
+                                    result.first
+
+                                val faceCounts =
+                                    result.second
+
+
+                                // =================================================
+                                // GENERATE COLLAGE
+                                // =================================================
+
+                                status =
+                                    "Creating collage..."
+
+
+                                val collage =
+                                    withContext(
+                                        Dispatchers.Default
+                                    ) {
+
                                         collageGenerator.createCollage(
                                             people = people,
-                                            faceCountAtTimestamp = faceCounts
+                                            faceCountAtTimestamp =
+                                                faceCounts
                                         )
+                                    }
 
-                                    resultPeople = people
-                                    resultCollage = collage
 
-                                    progress = 1f
+                                // =================================================
+                                // UPDATE UI
+                                // =================================================
 
-                                    status =
-                                        "Processing complete"
+                                resultPeople =
+                                    people
 
-                                    Log.d(
-                                        "IYKYK",
-                                        "Final people = ${people.size}"
-                                    )
+                                resultCollage =
+                                    collage
 
-                                } catch (e: Exception) {
+                                progress =
+                                    1f
 
-                                    Log.e(
-                                        "IYKYK",
-                                        "Processing failed",
-                                        e
-                                    )
+                                status =
+                                    "Processing complete"
 
-                                    status =
-                                        "Processing failed: ${e.message}"
 
-                                } finally {
+                                Log.d(
+                                    "IYKYK",
+                                    "Final people = ${people.size}"
+                                )
 
-                                    isProcessing = false
-                                }
+                                Log.d(
+                                    "IYKYK",
+                                    "Total appearances = ${
+                                        people.sumOf {
+                                            it.appearanceCount
+                                        }
+                                    }"
+                                )
+
+                            } catch (e: Exception) {
+
+                                Log.e(
+                                    "IYKYK",
+                                    "Processing failed",
+                                    e
+                                )
+
+                                status =
+                                    "Processing failed: ${
+                                        e.message
+                                    }"
+
+                            } finally {
+
+                                isProcessing =
+                                    false
                             }
                         }
                     }
 
-                // -----------------------------------------
+
+                // =================================================
                 // SCREEN NAVIGATION
-                // -----------------------------------------
+                // =================================================
 
                 when {
+
+                    // -------------------------------------------------
+                    // PROCESSING SCREEN
+                    // -------------------------------------------------
 
                     isProcessing -> {
 
                         ProcessingScreen(
-                            progress = progress,
-                            status = status
+                            progress =
+                                progress,
+                            status =
+                                status
                         )
                     }
+
+
+                    // -------------------------------------------------
+                    // RESULT SCREEN
+                    // -------------------------------------------------
 
                     resultPeople.isNotEmpty() -> {
 
                         ResultScreen(
-                            people = resultPeople,
-                            collage = resultCollage,
+
+                            people =
+                                resultPeople,
+
+                            collage =
+                                resultCollage,
+
+
+                            // -----------------------------------------
+                            // SAVE
+                            // -----------------------------------------
+
                             onSaveToGallery = {
+
                                 resultCollage?.let {
-                                    saveCollageToGallery(it)
+
+                                    saveCollageToGallery(
+                                        it
+                                    )
                                 }
                             },
+
+
+                            // -----------------------------------------
+                            // SHARE
+                            // -----------------------------------------
+
                             onShareCollage = {
+
                                 resultCollage?.let {
-                                    shareCollage(it)
+
+                                    shareCollage(
+                                        it
+                                    )
                                 }
                             },
+
+
+                            // -----------------------------------------
+                            // SELECT ANOTHER VIDEO
+                            // -----------------------------------------
+
                             onSelectAnother = {
 
                                 resultPeople =
                                     emptyList()
 
-                                progress = 0f
-                                status = ""
-
                                 resultCollage =
                                     null
+
+                                progress =
+                                    0f
+
+                                status =
+                                    ""
                             }
                         )
                     }
 
+
+                    // -------------------------------------------------
+                    // HOME SCREEN
+                    // -------------------------------------------------
+
                     else -> {
 
                         HomeScreen(
+
                             onSelectVideo = {
 
                                 videoPicker.launch(
@@ -240,50 +369,62 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // ============================================================
+
+    // =============================================================
     // VIDEO PROCESSING PIPELINE
-    // ============================================================
+    // =============================================================
 
     private suspend fun processVideo(
         uri: Uri,
-        onProgress: suspend (Float, String) -> Unit
+        onProgress: suspend (
+            Float,
+            String
+        ) -> Unit
     ): Pair<List<Person>, Map<Long, Int>> {
 
-        // ========================================================
-        // STEP 1 — EXTRACT FRAMES
-        // ========================================================
+
+        // =========================================================
+        // STEP 1 — FRAME EXTRACTION
+        // =========================================================
 
         onProgress(
             0f,
             "Extracting frames..."
         )
 
+
         val frames =
-            frameExtractor.extractFrames(uri)
+            frameExtractor.extractFrames(
+                uri
+            )
+
 
         Log.d(
             "IYKYK",
             "Frames extracted = ${frames.size}"
         )
 
+
         if (frames.isEmpty()) {
 
-            Log.d(
-                "IYKYK",
-                "No frames extracted"
+            return Pair(
+                emptyList(),
+                emptyMap()
             )
-
-            return Pair(emptyList(), emptyMap())
         }
 
-        // ========================================================
-        // STEP 2 — DETECT FACES
-        // ========================================================
+
+        // =========================================================
+        // STEP 2 — FACE DETECTION
+        // =========================================================
 
         val detectedFaces =
             mutableListOf<DetectedFace>()
 
-        frames.forEachIndexed { index, pair ->
+
+        frames.forEachIndexed {
+                index,
+                pair ->
 
             val timestampMs =
                 pair.first
@@ -291,24 +432,26 @@ class MainActivity : ComponentActivity() {
             val bitmap =
                 pair.second
 
+
             val faces =
                 faceDetector.detectFaces(
                     timestampMs,
                     bitmap
                 )
 
+
             detectedFaces.addAll(
                 faces
             )
 
-            /*
-             * Face detection occupies approximately
-             * 40% of the overall progress.
-             */
+
             val detectionProgress =
                 0.4f *
-                        (index + 1).toFloat() /
+                        (
+                                index + 1
+                                ).toFloat() /
                         frames.size
+
 
             onProgress(
                 detectionProgress,
@@ -316,10 +459,13 @@ class MainActivity : ComponentActivity() {
             )
         }
 
+
         Log.d(
             "IYKYK",
             "Faces detected = ${detectedFaces.size}"
         )
+
+
         val faceCountAtTimestamp =
             detectedFaces
                 .groupingBy {
@@ -327,50 +473,52 @@ class MainActivity : ComponentActivity() {
                 }
                 .eachCount()
 
+
         if (detectedFaces.isEmpty()) {
 
-            Log.d(
-                "IYKYK",
-                "No faces detected"
+            return Pair(
+                emptyList(),
+                emptyMap()
             )
-
-            return Pair(emptyList(), emptyMap())
         }
 
-        // ========================================================
-        // STEP 3 — GENERATE FACE EMBEDDINGS
-        // ========================================================
+
+        // =========================================================
+        // STEP 3 — FACE EMBEDDINGS
+        // =========================================================
 
         val faceEmbeddings =
             mutableListOf<FaceEmbedding>()
 
-        detectedFaces.forEachIndexed { index, face ->
+
+        detectedFaces.forEachIndexed {
+                index,
+                face ->
 
             val embedding =
                 faceEmbedder.getEmbedding(
                     face
                 )
 
-            /*
-             * Store face + its 192-dimensional
-             * MobileFaceNet embedding.
-             */
+
             faceEmbeddings.add(
                 FaceEmbedding(
-                    face = face,
-                    embedding = embedding
+                    face =
+                        face,
+                    embedding =
+                        embedding
                 )
             )
 
-            /*
-             * Embedding stage occupies approximately
-             * 30% of total progress.
-             */
+
             val embeddingProgress =
                 0.4f +
                         0.3f *
-                        (index + 1).toFloat() /
+                        (
+                                index + 1
+                                ).toFloat() /
                         detectedFaces.size
+
 
             onProgress(
                 embeddingProgress,
@@ -378,40 +526,59 @@ class MainActivity : ComponentActivity() {
             )
         }
 
+
         Log.d(
             "IYKYK",
-            "Embeddings generated = ${faceEmbeddings.size}"
+            "Embeddings generated = ${
+                faceEmbeddings.size
+            }"
         )
 
-        // ========================================================
-// STEP 4 — FIND CONTINUOUS APPEARANCES
-// ========================================================
+
+        // =========================================================
+        // STEP 4 — CONTINUOUS APPEARANCES
+        // =========================================================
 
         onProgress(
             0.75f,
             "Finding appearances..."
         )
 
+
         val appearanceTracker =
             AppearanceTracker()
+
 
         val appearanceGroups =
             appearanceTracker.createAppearances(
                 faceEmbeddings
             )
 
+
         Log.d(
             "IYKYK",
-            "Appearances found = ${appearanceGroups.size}"
+            "Appearances found = ${
+                appearanceGroups.size
+            }"
         )
 
-        appearanceGroups.forEachIndexed { index, appearance ->
+
+        appearanceGroups.forEachIndexed {
+                index,
+                appearance ->
 
             val start =
-                appearance.first().face.timestampMs
+                appearance
+                    .first()
+                    .face
+                    .timestampMs
 
             val end =
-                appearance.last().face.timestampMs
+                appearance
+                    .last()
+                    .face
+                    .timestampMs
+
 
             Log.d(
                 "IYKYK",
@@ -421,35 +588,55 @@ class MainActivity : ComponentActivity() {
             )
         }
 
+
         if (appearanceGroups.isEmpty()) {
-            return Pair(emptyList(), emptyMap())
+
+            return Pair(
+                emptyList(),
+                emptyMap()
+            )
         }
 
-// ========================================================
-// STEP 5 — CREATE ONE EMBEDDING PER APPEARANCE
-// ========================================================
+
+        // =========================================================
+        // STEP 5 — ONE EMBEDDING PER APPEARANCE
+        // =========================================================
 
         onProgress(
             0.85f,
             "Identifying people..."
         )
 
+
         val appearanceEmbeddings =
             appearanceGroups.map { group ->
 
                 val embeddingSize =
-                    group.first().embedding.size
+                    group
+                        .first()
+                        .embedding
+                        .size
+
 
                 val average =
-                    FloatArray(embeddingSize)
+                    FloatArray(
+                        embeddingSize
+                    )
+
+
+                // -----------------------------------------------
+                // Average embeddings
+                // -----------------------------------------------
 
                 for (item in group) {
 
                     for (i in 0 until embeddingSize) {
+
                         average[i] +=
                             item.embedding[i]
                     }
                 }
+
 
                 for (i in average.indices) {
 
@@ -457,18 +644,27 @@ class MainActivity : ComponentActivity() {
                         group.size.toFloat()
                 }
 
-                /*
-                 * L2-normalize the averaged embedding.
-                 */
-                var magnitude = 0f
+
+                // -----------------------------------------------
+                // L2 normalization
+                // -----------------------------------------------
+
+                var magnitude =
+                    0f
+
 
                 for (value in average) {
+
                     magnitude +=
                         value * value
                 }
 
+
                 magnitude =
-                    kotlin.math.sqrt(magnitude)
+                    kotlin.math.sqrt(
+                        magnitude
+                    )
+
 
                 if (magnitude > 0f) {
 
@@ -479,70 +675,112 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                /*
-                 * Temporary representative.
-                 *
-                 * We will replace this later with
-                 * RepresentativeSelector.
-                 */
+
+                // -----------------------------------------------
+                // Representative frame
+                // -----------------------------------------------
+
                 val representative =
-                    group[group.size / 2].face
+                    representativeSelector
+                        .selectBestFace(
+                            faces =
+                                group.map {
+                                    it.face
+                                },
+
+                            faceCountAtTimestamp =
+                                faceCountAtTimestamp
+                        )
+                        ?: group[
+                            group.size / 2
+                        ].face
+
 
                 FaceEmbedding(
-                    face = representative,
-                    embedding = average
+                    face =
+                        representative,
+
+                    embedding =
+                        average
                 )
             }
 
+
         Log.d(
             "IYKYK",
-            "Appearance embeddings = " +
-                    appearanceEmbeddings.size
+            "Appearance embeddings = ${
+                appearanceEmbeddings.size
+            }"
         )
 
-// ========================================================
-// STEP 6 — CLUSTER APPEARANCES INTO PEOPLE
-// ========================================================
+
+        // =========================================================
+        // STEP 6 — CLUSTER PEOPLE
+        // =========================================================
 
         val clusterer =
             FaceClusterer()
 
+
         val people =
             clusterer.cluster(
-                appearanceEmbeddings
+                appearanceEmbeddings,
+                appearanceGroups
             )
+
 
         Log.d(
             "IYKYK",
             "People found = ${people.size}"
         )
-        // ========================================================
-// DEBUG — MAP EVERY APPEARANCE TO ITS PERSON
-// ========================================================
+
+
+        // =========================================================
+        // DEBUG — APPEARANCE MAPPING
+        // =========================================================
 
         for (person in people) {
 
-            for (representativeFace in person.faces) {
+            for (
+            representativeFace
+            in person.faces
+            ) {
 
                 val appearanceIndex =
-                    appearanceEmbeddings.indexOfFirst {
-                        it.face === representativeFace
-                    }
+                    appearanceEmbeddings
+                        .indexOfFirst {
+
+                            it.face ===
+                                    representativeFace
+                        }
+
 
                 if (appearanceIndex >= 0) {
 
                     val group =
-                        appearanceGroups[appearanceIndex]
+                        appearanceGroups[
+                            appearanceIndex
+                        ]
+
 
                     val start =
-                        group.first().face.timestampMs
+                        group
+                            .first()
+                            .face
+                            .timestampMs
 
                     val end =
-                        group.last().face.timestampMs
+                        group
+                            .last()
+                            .face
+                            .timestampMs
+
 
                     Log.d(
                         "IYKYK_MAPPING",
-                        "Appearance ${appearanceIndex + 1}: " +
+                        "Appearance ${
+                            appearanceIndex + 1
+                        }: " +
                                 "$start-$end ms -> " +
                                 "Person ${person.id}"
                     )
@@ -551,45 +789,51 @@ class MainActivity : ComponentActivity() {
         }
 
 
-// ========================================================
-// STEP 7 — STORE REAL APPEARANCES IN EACH PERSON
-// ========================================================
+        // =========================================================
+        // STEP 7 — STORE REAL APPEARANCES
+        // =========================================================
 
         for (person in people) {
 
-            /*
-             * The FaceClusterer stores the representative
-             * face of each appearance in person.faces.
-             *
-             * Match each representative face back to its
-             * original appearance group.
-             */
-            for (representativeFace in person.faces) {
+            for (
+            representativeFace
+            in person.faces
+            ) {
 
                 val group =
-                    appearanceGroups.firstOrNull { appearance ->
+                    appearanceGroups
+                        .firstOrNull { appearance ->
 
-                        appearance.any { item ->
+                            appearance.any { item ->
 
-                            item.face ===
-                                    representativeFace
+                                item.face ===
+                                        representativeFace
+                            }
                         }
-                    }
+
 
                 if (group != null) {
 
                     addAppearance(
-                        person = person,
+                        person =
+                            person,
+
                         faces =
                             group.map {
                                 it.face
                             },
+
                         faceCountAtTimestamp =
                             faceCountAtTimestamp
                     )
                 }
             }
         }
+
+
+        // =========================================================
+        // FINAL LOGS
+        // =========================================================
 
         for (person in people) {
 
@@ -599,13 +843,24 @@ class MainActivity : ComponentActivity() {
                         "${person.appearanceCount} appearances"
             )
         }
+
+
         onProgress(
             1f,
             "Found ${people.size} people"
         )
 
-        return Pair(people, faceCountAtTimestamp)
+
+        return Pair(
+            people,
+            faceCountAtTimestamp
+        )
     }
+
+
+    // =============================================================
+    // ADD APPEARANCE
+    // =============================================================
 
     private fun addAppearance(
         person: Person,
@@ -617,129 +872,321 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+
         val startTimeMs =
-            faces.first().timestampMs
+            faces
+                .first()
+                .timestampMs
+
 
         val endTimeMs =
-            faces.last().timestampMs
+            faces
+                .last()
+                .timestampMs
 
-        /*
-         * Select the best frame from this appearance
-         * using pose, eyes, sharpness, expression,
-         * face size and completeness.
-         */
+
         val representativeFace =
-            representativeSelector.selectBestFace(
-                faces = faces,
-                faceCountAtTimestamp =
-                    faceCountAtTimestamp
-            )
+            representativeSelector
+                .selectBestFace(
+                    faces =
+                        faces,
+
+                    faceCountAtTimestamp =
+                        faceCountAtTimestamp
+                )
+
+
         Log.d(
             "IYKYK_REP",
             "Person ${person.id}: " +
-                    "selected=${representativeFace?.timestampMs}ms, " +
+                    "selected=${
+                        representativeFace
+                            ?.timestampMs
+                    }ms, " +
                     "facesInFrame=${
                         representativeFace?.let {
-                            faceCountAtTimestamp[it.timestampMs] ?: 1
+
+                            faceCountAtTimestamp[
+                                it.timestampMs
+                            ] ?: 1
                         }
                     }"
         )
+
 
         if (representativeFace == null) {
             return
         }
 
+
         person.appearances.add(
+
             Appearance(
-                personId = person.id,
-                startTimeMs = startTimeMs,
-                endTimeMs = endTimeMs,
-                representativeFace = representativeFace
+
+                personId =
+                    person.id,
+
+                startTimeMs =
+                    startTimeMs,
+
+                endTimeMs =
+                    endTimeMs,
+
+                representativeFace =
+                    representativeFace
             )
         )
+
 
         Log.d(
             "IYKYK",
             "Person ${person.id} appearance: " +
-                    "$startTimeMs ms - $endTimeMs ms " +
-                    "representative=${representativeFace.timestampMs} ms"
+                    "$startTimeMs ms - " +
+                    "$endTimeMs ms " +
+                    "representative=" +
+                    "${representativeFace.timestampMs} ms"
         )
     }
 
-    // ============================================================
-    // GALLERY & SHARE ACTIONS
-    // ============================================================
 
-    private fun saveCollageToGallery(bitmap: Bitmap) {
+    // =============================================================
+    // SAVE COLLAGE
+    // =============================================================
+
+    private fun saveCollageToGallery(
+        bitmap: Bitmap
+    ) {
+
         try {
-            val filename = "IYKYK_Collage_${System.currentTimeMillis()}.png"
-            val contentValues = ContentValues().apply {
-                put(MediaStore.Images.Media.DISPLAY_NAME, filename)
-                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/IYKYK")
-                    put(MediaStore.Images.Media.IS_PENDING, 1)
+
+            val filename =
+                "IYKYK_Collage_${
+                    System.currentTimeMillis()
+                }.jpg"
+
+
+            val values =
+                ContentValues().apply {
+
+                    put(
+                        MediaStore.Images.Media.DISPLAY_NAME,
+                        filename
+                    )
+
+                    put(
+                        MediaStore.Images.Media.MIME_TYPE,
+                        "image/jpeg"
+                    )
+
+                    if (
+                        Build.VERSION.SDK_INT >=
+                        Build.VERSION_CODES.Q
+                    ) {
+
+                        put(
+                            MediaStore.Images.Media.RELATIVE_PATH,
+                            Environment.DIRECTORY_PICTURES +
+                                    "/IYKYK"
+                        )
+
+                        put(
+                            MediaStore.Images.Media.IS_PENDING,
+                            1
+                        )
+                    }
                 }
+
+
+            val uri =
+                contentResolver.insert(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    values
+                )
+
+
+            if (uri == null) {
+
+                Toast.makeText(
+                    this,
+                    "Unable to save collage",
+                    Toast.LENGTH_SHORT
+                ).show()
+
+                return
             }
 
-            val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
-            if (uri != null) {
-                contentResolver.openOutputStream(uri)?.use { stream ->
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+
+            contentResolver
+                .openOutputStream(uri)
+                ?.use { outputStream ->
+
+                    bitmap.compress(
+                        Bitmap.CompressFormat.JPEG,
+                        95,
+                        outputStream
+                    )
                 }
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    contentValues.clear()
-                    contentValues.put(MediaStore.Images.Media.IS_PENDING, 0)
-                    contentResolver.update(uri, contentValues, null, null)
-                }
 
-                Toast.makeText(this, "Collage saved to Pictures/IYKYK!", Toast.LENGTH_LONG).show()
-            } else {
-                Toast.makeText(this, "Failed to save collage to gallery", Toast.LENGTH_SHORT).show()
+            if (
+                Build.VERSION.SDK_INT >=
+                Build.VERSION_CODES.Q
+            ) {
+
+                val updateValues =
+                    ContentValues().apply {
+
+                        put(
+                            MediaStore.Images.Media.IS_PENDING,
+                            0
+                        )
+                    }
+
+
+                contentResolver.update(
+                    uri,
+                    updateValues,
+                    null,
+                    null
+                )
             }
-        } catch (e: Exception) {
-            Log.e("IYKYK", "Error saving collage to gallery", e)
-            Toast.makeText(this, "Failed to save: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
-    }
 
-    private fun shareCollage(bitmap: Bitmap) {
-        try {
-            val imagesFolder = File(cacheDir, "images").apply { mkdirs() }
-            val file = File(imagesFolder, "iykyk_shared_collage.png")
-            FileOutputStream(file).use { out ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-            }
 
-            val contentUri = FileProvider.getUriForFile(
+            Toast.makeText(
                 this,
-                "${applicationContext.packageName}.fileprovider",
-                file
+                "Collage saved to Gallery",
+                Toast.LENGTH_SHORT
+            ).show()
+
+
+        } catch (e: Exception) {
+
+            Log.e(
+                "IYKYK",
+                "Error saving collage",
+                e
             )
 
-            val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                type = "image/png"
-                putExtra(Intent.EXTRA_STREAM, contentUri)
-                putExtra(Intent.EXTRA_SUBJECT, "IYKYK Unique Person Collage")
-                putExtra(Intent.EXTRA_TEXT, "Check out this video collage generated on-device with IYKYK!")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
 
-            startActivity(Intent.createChooser(shareIntent, "Share Collage"))
-        } catch (e: Exception) {
-            Log.e("IYKYK", "Error sharing collage", e)
-            Toast.makeText(this, "Failed to share: ${e.message}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                this,
+                "Failed to save collage",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
-    // ============================================================
+
+    // =============================================================
+    // SHARE COLLAGE
+    // =============================================================
+
+    private fun shareCollage(
+        bitmap: Bitmap
+    ) {
+
+        try {
+
+            val shareDirectory =
+                File(
+                    cacheDir,
+                    "shared_collage"
+                )
+
+
+            if (!shareDirectory.exists()) {
+                shareDirectory.mkdirs()
+            }
+
+
+            val file =
+                File(
+                    shareDirectory,
+                    "IYKYK_collage.jpg"
+                )
+
+
+            file.outputStream().use { outputStream ->
+
+                bitmap.compress(
+                    Bitmap.CompressFormat.JPEG,
+                    95,
+                    outputStream
+                )
+            }
+
+
+            val uri =
+                FileProvider.getUriForFile(
+                    this,
+                    "${packageName}.fileprovider",
+                    file
+                )
+
+
+            val shareIntent =
+                Intent(
+                    Intent.ACTION_SEND
+                ).apply {
+
+                    type =
+                        "image/jpeg"
+
+                    putExtra(
+                        Intent.EXTRA_STREAM,
+                        uri
+                    )
+
+                    putExtra(
+                        Intent.EXTRA_SUBJECT,
+                        "IYKYK Collage"
+                    )
+
+                    putExtra(
+                        Intent.EXTRA_TEXT,
+                        "My IYKYK collage"
+                    )
+
+                    addFlags(
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                }
+
+
+            startActivity(
+                Intent.createChooser(
+                    shareIntent,
+                    "Share IYKYK Collage"
+                )
+            )
+
+
+        } catch (e: Exception) {
+
+            Log.e(
+                "IYKYK",
+                "Error sharing collage",
+                e
+            )
+
+
+            Toast.makeText(
+                this,
+                "Failed to share collage",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+
+    // =============================================================
     // CLEAN UP
-    // ============================================================
+    // =============================================================
 
     override fun onDestroy() {
 
         faceDetector.close()
+
         faceEmbedder.close()
 
         super.onDestroy()
