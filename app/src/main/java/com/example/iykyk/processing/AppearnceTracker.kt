@@ -8,17 +8,19 @@ class AppearanceTracker {
 
     companion object {
 
-        // Our video is sampled every 500 ms.
-        // If a face disappears for more than 1 second,
-        // consider the appearance finished.
-        private const val MAX_GAP_MS = 600L
+        // Video is sampled every 250 ms (4 fps).
+        // A gap of up to 1000 ms bridges momentary head turns or blinks.
+        private const val MAX_GAP_MS = 1000L
 
         // Minimum overlap between consecutive face boxes.
-        private const val IOU_THRESHOLD = 0.10f
+        private const val IOU_THRESHOLD = 0.05f
 
-        // Maximum allowed movement relative to the previous
-        // face size when IoU becomes small.
-        private const val MAX_CENTER_DISTANCE = 0.5f
+        // Maximum allowed movement relative to previous face size.
+        private const val MAX_CENTER_DISTANCE = 0.65f
+
+        // Minimum duration for a valid appearance (filters whip-pans)
+        private const val MIN_APPEARANCE_DURATION_MS = 400L
+        private const val MIN_FRAMES_PER_APPEARANCE = 2
     }
 
     private data class Track(
@@ -124,25 +126,12 @@ class AppearanceTracker {
                             currentBox
                         )
 
-                    /*
-                     * Calculate normalized center movement.
-                     */
                     val centerDistance =
                         normalizedCenterDistance(
                             previousBox,
                             currentBox
                         )
 
-                    /*
-                     * A face belongs to the same continuous
-                     * appearance if:
-                     *
-                     * 1. Its bounding box still overlaps, OR
-                     * 2. It moved only a reasonable distance.
-                     *
-                     * IMPORTANT:
-                     * Embedding similarity is NOT used here.
-                     */
                     val isMatch =
                         iou >= IOU_THRESHOLD ||
                                 centerDistance <=
@@ -152,11 +141,6 @@ class AppearanceTracker {
                         continue
                     }
 
-                    /*
-                     * Lower score = better spatial match.
-                     *
-                     * Prefer overlap first, then distance.
-                     */
                     val score =
                         if (iou >= IOU_THRESHOLD) {
                             1f - iou
@@ -210,7 +194,15 @@ class AppearanceTracker {
             }
         )
 
-        return completedTracks
+        /*
+         * Filter out spurious whip-pan passes:
+         * An appearance must be a continuous visible segment,
+         * not a 1-frame blurred whip-pan pass.
+         */
+        return completedTracks.filter { track ->
+            val duration = (track.last().face.timestampMs - track.first().face.timestampMs)
+            track.size >= MIN_FRAMES_PER_APPEARANCE || duration >= MIN_APPEARANCE_DURATION_MS
+        }
     }
 
     private fun calculateIoU(

@@ -1,38 +1,43 @@
 package com.example.iykyk
 
+import android.content.ContentValues
+import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import com.example.iykyk.data.VideoFrameExtractor
+import com.example.iykyk.model.Appearance
 import com.example.iykyk.model.DetectedFace
 import com.example.iykyk.model.FaceEmbedding
 import com.example.iykyk.model.Person
+import com.example.iykyk.processing.AppearanceTracker
+import com.example.iykyk.processing.CollageGenerator
 import com.example.iykyk.processing.FaceClusterer
 import com.example.iykyk.processing.FaceDetector
 import com.example.iykyk.processing.FaceEmbedder
-import com.example.iykyk.ui.ProcessingScreen
+import com.example.iykyk.processing.RepresentativeSelector
+import com.example.iykyk.ui.screens.HomeScreen
+import com.example.iykyk.ui.screens.ProcessingScreen
+import com.example.iykyk.ui.screens.ResultScreen
 import com.example.iykyk.ui.theme.IykykTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import com.example.iykyk.model.Appearance
-import com.example.iykyk.processing.AppearanceTracker
-import com.example.iykyk.processing.RepresentativeSelector
-import com.example.iykyk.processing.CollageGenerator
+import java.io.File
+import java.io.FileOutputStream
+
 class MainActivity : ComponentActivity() {
 
     private lateinit var frameExtractor: VideoFrameExtractor
@@ -111,7 +116,7 @@ class MainActivity : ComponentActivity() {
                                      * Video processing is CPU/ML intensive,
                                      * so run it away from the main UI thread.
                                      */
-                                    val people =
+                                    val (people, faceCounts) =
                                         withContext(Dispatchers.Default) {
 
                                             processVideo(
@@ -140,7 +145,8 @@ class MainActivity : ComponentActivity() {
 
                                     val collage =
                                         collageGenerator.createCollage(
-                                            people
+                                            people = people,
+                                            faceCountAtTimestamp = faceCounts
                                         )
 
                                     resultPeople = people
@@ -191,9 +197,19 @@ class MainActivity : ComponentActivity() {
 
                     resultPeople.isNotEmpty() -> {
 
-                        ResultPreview(
+                        ResultScreen(
                             people = resultPeople,
                             collage = resultCollage,
+                            onSaveToGallery = {
+                                resultCollage?.let {
+                                    saveCollageToGallery(it)
+                                }
+                            },
+                            onShareCollage = {
+                                resultCollage?.let {
+                                    shareCollage(it)
+                                }
+                            },
                             onSelectAnother = {
 
                                 resultPeople =
@@ -231,7 +247,7 @@ class MainActivity : ComponentActivity() {
     private suspend fun processVideo(
         uri: Uri,
         onProgress: suspend (Float, String) -> Unit
-    ): List<Person> {
+    ): Pair<List<Person>, Map<Long, Int>> {
 
         // ========================================================
         // STEP 1 — EXTRACT FRAMES
@@ -257,7 +273,7 @@ class MainActivity : ComponentActivity() {
                 "No frames extracted"
             )
 
-            return emptyList()
+            return Pair(emptyList(), emptyMap())
         }
 
         // ========================================================
@@ -318,7 +334,7 @@ class MainActivity : ComponentActivity() {
                 "No faces detected"
             )
 
-            return emptyList()
+            return Pair(emptyList(), emptyMap())
         }
 
         // ========================================================
@@ -406,7 +422,7 @@ class MainActivity : ComponentActivity() {
         }
 
         if (appearanceGroups.isEmpty()) {
-            return emptyList()
+            return Pair(emptyList(), emptyMap())
         }
 
 // ========================================================
@@ -588,8 +604,9 @@ class MainActivity : ComponentActivity() {
             "Found ${people.size} people"
         )
 
-        return people
+        return Pair(people, faceCountAtTimestamp)
     }
+
     private fun addAppearance(
         person: Person,
         faces: List<DetectedFace>,
@@ -650,88 +667,69 @@ class MainActivity : ComponentActivity() {
     }
 
     // ============================================================
-    // HOME SCREEN
+    // GALLERY & SHARE ACTIONS
     // ============================================================
 
-    @Composable
-    fun HomeScreen(
-        onSelectVideo: () -> Unit
-    ) {
-
-        Column(
-            modifier = Modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-
-            Text(
-                text = "IYKYK"
-            )
-
-            Button(
-                onClick = onSelectVideo
-            ) {
-
-                Text(
-                    text = "Select Video"
-                )
+    private fun saveCollageToGallery(bitmap: Bitmap) {
+        try {
+            val filename = "IYKYK_Collage_${System.currentTimeMillis()}.png"
+            val contentValues = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, filename)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/IYKYK")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
             }
+
+            val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+            if (uri != null) {
+                contentResolver.openOutputStream(uri)?.use { stream ->
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    contentValues.clear()
+                    contentValues.put(MediaStore.Images.Media.IS_PENDING, 0)
+                    contentResolver.update(uri, contentValues, null, null)
+                }
+
+                Toast.makeText(this, "Collage saved to Pictures/IYKYK!", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(this, "Failed to save collage to gallery", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            Log.e("IYKYK", "Error saving collage to gallery", e)
+            Toast.makeText(this, "Failed to save: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 
-    // ============================================================
-    // TEMPORARY RESULT SCREEN
-    // ============================================================
+    private fun shareCollage(bitmap: Bitmap) {
+        try {
+            val imagesFolder = File(cacheDir, "images").apply { mkdirs() }
+            val file = File(imagesFolder, "iykyk_shared_collage.png")
+            FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
 
-    @Composable
-    fun ResultPreview(
-        people: List<Person>,
-        collage: android.graphics.Bitmap?,
-        onSelectAnother: () -> Unit
-    ) {
-
-        Column(
-            modifier = Modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-
-            Text(
-                text = "Processing Complete"
+            val contentUri = FileProvider.getUriForFile(
+                this,
+                "${applicationContext.packageName}.fileprovider",
+                file
             )
 
-            Text(
-                text = "Found ${people.size} people"
-            )
-
-            if (collage != null) {
-
-                androidx.compose.foundation.Image(
-                    bitmap = collage.asImageBitmap(),
-                    contentDescription = "Generated collage",
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxSize()
-                )
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "image/png"
+                putExtra(Intent.EXTRA_STREAM, contentUri)
+                putExtra(Intent.EXTRA_SUBJECT, "IYKYK Unique Person Collage")
+                putExtra(Intent.EXTRA_TEXT, "Check out this video collage generated on-device with IYKYK!")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
 
-            people.forEach { person ->
-
-                Text(
-                    text =
-                        "Person ${person.id}: " +
-                                "${person.appearanceCount} appearances"
-                )
-            }
-
-            Button(
-                onClick = onSelectAnother
-            ) {
-
-                Text(
-                    text = "Select Another Video"
-                )
-            }
+            startActivity(Intent.createChooser(shareIntent, "Share Collage"))
+        } catch (e: Exception) {
+            Log.e("IYKYK", "Error sharing collage", e)
+            Toast.makeText(this, "Failed to share: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 

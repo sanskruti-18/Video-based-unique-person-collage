@@ -18,5 +18,6 @@ data class DetectedFace(
     val smilingProbability: Float?,
 
     val leftEyePosition: PointF?,
-    val rightEyePosition: PointF?
+    val rightEyePosition: PointF?,
+    val noseBasePosition: PointF? = null
 )

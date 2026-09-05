@@ -137,9 +137,16 @@ class FaceClusterer {
         }
 
         /*
+         * Sort clusters chronologically by the earliest appearance time.
+         */
+        val sortedClusters = clusters.sortedBy { cluster ->
+            cluster.minOf { faceIndex -> faceEmbeddings[faceIndex].face.timestampMs }
+        }
+
+        /*
          * Convert clusters into Person objects.
          */
-        return clusters.mapIndexed { index, cluster ->
+        return sortedClusters.mapIndexed { index, cluster ->
 
             val person =
                 Person(

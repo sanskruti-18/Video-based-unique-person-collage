@@ -13,7 +13,7 @@ class FaceDetector {
     private val detector = FaceDetection.getClient(
         FaceDetectorOptions.Builder()
             .setPerformanceMode(
-                FaceDetectorOptions.PERFORMANCE_MODE_FAST
+                FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE
             )
             .setLandmarkMode(
                 FaceDetectorOptions.LANDMARK_MODE_ALL
@@ -21,7 +21,7 @@ class FaceDetector {
             .setClassificationMode(
                 FaceDetectorOptions.CLASSIFICATION_MODE_ALL
             )
-            .setMinFaceSize(0.08f)
+            .setMinFaceSize(0.06f)
             .build()
     )
 
@@ -46,6 +46,11 @@ class FaceDetector {
             val rightEye =
                 face.getLandmark(
                     FaceLandmark.RIGHT_EYE
+                )?.position
+
+            val noseBase =
+                face.getLandmark(
+                    FaceLandmark.NOSE_BASE
                 )?.position
 
             DetectedFace(
@@ -79,7 +84,10 @@ class FaceDetector {
                     leftEye,
 
                 rightEyePosition =
-                    rightEye
+                    rightEye,
+
+                noseBasePosition =
+                    noseBase
             )
         }
     }

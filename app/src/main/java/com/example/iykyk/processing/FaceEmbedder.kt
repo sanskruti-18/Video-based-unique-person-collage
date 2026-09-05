@@ -25,26 +25,19 @@ class FaceEmbedder(context: Context) {
         private const val EMBEDDING_SIZE = 192
 
         /*
-         * Canonical eye positions.
-         *
-         * MobileFaceNet receives every face in the
-         * same normalized geometric arrangement.
+         * Canonical MobileFaceNet 112x112 target landmarks.
+         * Note ML Kit landmark conventions:
+         * FaceLandmark.RIGHT_EYE is the subject's right eye, which is on the VIEWER'S LEFT side.
+         * FaceLandmark.LEFT_EYE is the subject's left eye, which is on the VIEWER'S RIGHT side.
          */
-        private val TARGET_LEFT_EYE =
-            PointF(35f, 45f)
+        private val TARGET_VIEWER_LEFT_EYE =
+            PointF(38.2946f, 51.6963f)
 
-        private val TARGET_RIGHT_EYE =
-            PointF(77f, 45f)
+        private val TARGET_VIEWER_RIGHT_EYE =
+            PointF(73.5318f, 51.5014f)
 
-        /*
-         * Synthetic nose/chin-direction point.
-         *
-         * This gives us a third point so that
-         * Matrix.setPolyToPoly() can perform an
-         * affine transformation.
-         */
         private val TARGET_NOSE =
-            PointF(56f, 75f)
+            PointF(56.0252f, 71.7366f)
     }
 
     init {
@@ -114,19 +107,18 @@ class FaceEmbedder(context: Context) {
                     pixel and 0xFF
 
                 /*
-                 * Normalize RGB from [0,255]
-                 * to approximately [-1,1].
+                 * Normalize RGB: (pixel - 127.5) / 128.0 for MobileFaceNet
                  */
                 input.putFloat(
-                    (r / 128.0f) - 1.0f
+                    (r - 127.5f) / 128.0f
                 )
 
                 input.putFloat(
-                    (g / 128.0f) - 1.0f
+                    (g - 127.5f) / 128.0f
                 )
 
                 input.putFloat(
-                    (b / 128.0f) - 1.0f
+                    (b - 127.5f) / 128.0f
                 )
             }
         }
@@ -168,19 +160,24 @@ class FaceEmbedder(context: Context) {
 
         val bitmap = face.frame
 
-        val leftEye = face.leftEyePosition
-        val rightEye = face.rightEyePosition
+        // ML Kit anatomical landmarks:
+        // face.rightEyePosition is the subject's right eye (viewer's left)
+        // face.leftEyePosition is the subject's left eye (viewer's right)
+        val viewerLeftEye = face.rightEyePosition
+        val viewerRightEye = face.leftEyePosition
+        val nose = face.noseBasePosition
 
         if (
-            leftEye != null &&
-            rightEye != null
+            viewerLeftEye != null &&
+            viewerRightEye != null
         ) {
 
             val aligned =
                 createAffineAlignedFace(
                     bitmap,
-                    leftEye,
-                    rightEye
+                    viewerLeftEye,
+                    viewerRightEye,
+                    nose
                 )
 
             if (aligned != null) {
@@ -196,15 +193,16 @@ class FaceEmbedder(context: Context) {
 
     private fun createAffineAlignedFace(
         bitmap: Bitmap,
-        leftEye: PointF,
-        rightEye: PointF
+        viewerLeftEye: PointF,
+        viewerRightEye: PointF,
+        noseLandmark: PointF?
     ): Bitmap? {
 
         val dx =
-            rightEye.x - leftEye.x
+            viewerRightEye.x - viewerLeftEye.x
 
         val dy =
-            rightEye.y - leftEye.y
+            viewerRightEye.y - viewerLeftEye.y
 
         val eyeDistance =
             sqrt(
@@ -224,22 +222,17 @@ class FaceEmbedder(context: Context) {
          * Midpoint between the eyes.
          */
         val eyeCenterX =
-            (leftEye.x +
-                    rightEye.x) / 2f
+            (viewerLeftEye.x +
+                    viewerRightEye.x) / 2f
 
         val eyeCenterY =
-            (leftEye.y +
-                    rightEye.y) / 2f
+            (viewerLeftEye.y +
+                    viewerRightEye.y) / 2f
 
         /*
-         * Vector perpendicular to the eye line.
-         *
-         * For a normal horizontal eye line:
-         *
-         *       left ---- right
-         *              |
-         *              ↓
-         *            nose
+         * Vector perpendicular to the eye line directed downwards (towards nose/chin).
+         * Since eye line goes from left eye to right eye (+X, dx > 0),
+         * rotating 90 degrees clockwise gives (-dy, dx), which has +Y (downwards).
          */
         val perpendicularX =
             -dy
@@ -247,9 +240,6 @@ class FaceEmbedder(context: Context) {
         val perpendicularY =
             dx
 
-        /*
-         * Normalize the perpendicular vector.
-         */
         val perpendicularLength =
             sqrt(
                 perpendicularX *
@@ -270,38 +260,34 @@ class FaceEmbedder(context: Context) {
             perpendicularY /
                     perpendicularLength
 
-        /*
-         * Create a synthetic point below the
-         * eye midpoint.
-         *
-         * It is not an actual nose landmark.
-         * It only establishes the face's vertical
-         * orientation for the affine transform.
-         */
         val noseDistance =
             eyeDistance * 0.72f
 
+        // Prefer actual nose landmark if available and reasonably positioned below eyes
         val sourceNose =
-            PointF(
-                eyeCenterX +
-                        normalizedX *
-                        noseDistance,
-
-                eyeCenterY +
-                        normalizedY *
-                        noseDistance
-            )
+            if (noseLandmark != null && noseLandmark.y > eyeCenterY) {
+                noseLandmark
+            } else {
+                PointF(
+                    eyeCenterX +
+                            normalizedX *
+                            noseDistance,
+                    eyeCenterY +
+                            normalizedY *
+                            noseDistance
+                )
+            }
 
         /*
          * Source points in the original video.
          */
         val sourcePoints =
             floatArrayOf(
-                leftEye.x,
-                leftEye.y,
+                viewerLeftEye.x,
+                viewerLeftEye.y,
 
-                rightEye.x,
-                rightEye.y,
+                viewerRightEye.x,
+                viewerRightEye.y,
 
                 sourceNose.x,
                 sourceNose.y
@@ -313,11 +299,11 @@ class FaceEmbedder(context: Context) {
          */
         val destinationPoints =
             floatArrayOf(
-                TARGET_LEFT_EYE.x,
-                TARGET_LEFT_EYE.y,
+                TARGET_VIEWER_LEFT_EYE.x,
+                TARGET_VIEWER_LEFT_EYE.y,
 
-                TARGET_RIGHT_EYE.x,
-                TARGET_RIGHT_EYE.y,
+                TARGET_VIEWER_RIGHT_EYE.x,
+                TARGET_VIEWER_RIGHT_EYE.y,
 
                 TARGET_NOSE.x,
                 TARGET_NOSE.y
